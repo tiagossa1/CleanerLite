@@ -1,96 +1,67 @@
 ﻿using FluentColorConsole;
 using Microsoft.Extensions.Configuration;
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
+using CleanerLite.Services;
 
 namespace CleanerLite
 {
     internal static class Program
     {
-        static void Main(string[] args)
+        // This should be initialized by DI, but the project is so small that it's not worth it.
+        private static readonly DeleteFileService DeleteFileService = new();
+        private static readonly DeleteFolderService DeleteFolderService = new();
+        
+        private static bool HasBeenRunAsAdmin => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+        
+        private static void Main(string[] args)
         {
-            if (SystemFactory.GetOSPlatform() == OSPlatform.Windows)
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                if (!SystemFactory.IsCurrentProcessAdmin())
-                {
-                    ColorConsole.WithYellowText.WriteLine("This software is not running as administrator, so it might NOT delete specific files/folders.");
-                }
-
-                var builder = new ConfigurationBuilder().AddJsonFile("appSettings.json", true, true);
-
-                var config = builder.Build();
-                var paths = config.GetSection("Paths").GetChildren().Where(x => !string.IsNullOrWhiteSpace(x.Value)).Select(x => x.Value).ToList();
-
-                foreach (var path in paths)
-                {
-                    DeleteFilesAndFolders(path);
-                }
+                throw new NotSupportedException("This software only runs on Windows.");
             }
-            else
+            
+            if (!HasBeenRunAsAdmin)
             {
-                throw new Exception("This software only runs on Windows.");
+                ColorConsole.WithYellowText.WriteLine("This software is not running as administrator, so it might NOT delete specific files/folders.");
             }
 
-            ColorConsole.WithGreenText.WriteLine("Job done!");
+            var config = GetConfiguration();
+            var paths = config
+                .GetSection("Paths")
+                .Get<List<string>>()
+                .FindAll(path => !string.IsNullOrWhiteSpace(path));
+
+            foreach (var path in paths)
+            {
+                DeleteFilesAndFolders(path);
+            }
+
+            ColorConsole.WithGreenText.WriteLine("All paths have been cleaned.");
             Console.ReadKey();
+        }
+
+        private static IConfigurationRoot GetConfiguration()
+        {
+            var builder = new ConfigurationBuilder().AddJsonFile("appSettings.json", true, true);
+            return builder.Build();
         }
 
         private static void DeleteFilesAndFolders(string path)
         {
-            if (Directory.Exists(path))
+            if (!Directory.Exists(path))
             {
-                string[] files = Directory.GetFiles(path);
-                string[] folders = Directory.GetDirectories(path);
-
-                DeleteFiles(files);
-                DeleteFolders(folders);
+                return;
             }
-        }
-
-        private static bool IsDirectoryEmpty(string folderPath)
-        {
-            if (!string.IsNullOrWhiteSpace(folderPath))
-            {
-                return !Directory.EnumerateFileSystemEntries(folderPath).Any();
-            }
-
-            return false;
-        }
-
-        private static void DeleteFolders(string[] folderPaths)
-        {
-            foreach (var folder in folderPaths)
-            {
-                try
-                {
-                    DeleteFilesAndFolders(folder);
-
-                    Directory.Delete(folder, true);
-                    ColorConsole.WithGreenText.WriteLine($"{folder} deleted.");
-                }
-                catch (Exception ex)
-                {
-                    ColorConsole.WithRedText.WriteLine($"Could not delete {folder}: {ex.Message}.");
-                }
-            }
-        }
-
-        private static void DeleteFiles(string[] files)
-        {
-            foreach (var file in files)
-            {
-                try
-                {
-                    File.Delete(file);
-                    ColorConsole.WithGreenText.WriteLine($"{file} deleted.");
-                }
-                catch (Exception ex)
-                {
-                    ColorConsole.WithRedText.WriteLine($"Could not delete {file}: {ex.Message}.");
-                }
-            }
+            
+            var files = Directory.GetFiles(path);
+            var folders = Directory.GetDirectories(path);
+            
+            DeleteFolderService.Delete(folders);
+            DeleteFileService.Delete(files);
         }
     }
 }
